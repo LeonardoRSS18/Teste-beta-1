@@ -46,8 +46,11 @@ const App: React.FC = () => {
   useEffect(() => {
     const socket = io({
       transports: ['websocket', 'polling'],
-      reconnectionAttempts: 5,
-      timeout: 10000,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      timeout: 20000,
+      forceNew: true,
+      upgrade: true
     });
     socketRef.current = socket;
 

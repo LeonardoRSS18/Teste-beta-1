@@ -3,7 +3,7 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
 import { fileURLToPath } from "url";
-import { BUILDING_TYPES, INITIAL_INVENTORY, DEFAULT_SYSTEM_MARKET_CONFIG } from './gameData.js';
+import { BUILDING_TYPES, INITIAL_INVENTORY, DEFAULT_SYSTEM_MARKET_CONFIG } from './gameData.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,9 +101,11 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST"],
+    credentials: true
   },
-  path: '/socket.io/'
+  allowEIO3: true,
+  transports: ['websocket', 'polling']
 });
 
 // Initial Game State
@@ -114,7 +116,7 @@ let gameState: any = {
   systemMarketStock: { ...INITIAL_INVENTORY },
   isPaused: false,
   turnTimeLeft: 120,
-  isLobby: true,
+  isLobby: false,
   lobbyCountdown: null,
   config: {
     initialCoins: 500,
@@ -137,27 +139,7 @@ let gameState: any = {
 setInterval(() => {
   if (!gameState) return;
 
-  if (gameState.isLobby) {
-    const playerCount = gameState.villages.length;
-    if (playerCount >= 5) {
-      if (gameState.lobbyCountdown === null) {
-        gameState.lobbyCountdown = 20;
-      } else if (gameState.lobbyCountdown > 0) {
-        gameState.lobbyCountdown -= 1;
-      } else {
-        gameState.isLobby = false;
-        gameState.lobbyCountdown = null;
-        io.emit("game_started");
-      }
-    } else {
-      gameState.lobbyCountdown = null;
-    }
-    io.emit("lobby_tick", { 
-      count: playerCount, 
-      countdown: gameState.lobbyCountdown,
-      villages: gameState.villages
-    });
-  } else if (!gameState.isPaused) {
+  if (!gameState.isPaused) {
     gameState.turnTimeLeft -= 1;
     if (gameState.turnTimeLeft <= 0) {
       gameState = processNextTurn(gameState);
@@ -193,18 +175,10 @@ io.on("connection", (socket) => {
   });
 
   socket.on("force_turn", () => {
-    if (gameState.isLobby) {
-      gameState.isLobby = false;
-      gameState.lobbyCountdown = null;
-      gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
-      io.emit("game_started");
-      io.emit("state_update", gameState);
-    } else {
-      gameState = processNextTurn(gameState);
-      gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
-      io.emit("state_update", gameState);
-      io.emit("turn_ended");
-    }
+    gameState = processNextTurn(gameState);
+    gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
+    io.emit("state_update", gameState);
+    io.emit("turn_ended");
   });
 
   socket.on("reset_game", () => {
@@ -216,7 +190,7 @@ io.on("connection", (socket) => {
       systemMarketStock: { ...INITIAL_INVENTORY },
       isPaused: false,
       turnTimeLeft: 120,
-      isLobby: true,
+      isLobby: false,
       lobbyCountdown: null
     };
     io.emit("state_update", gameState);
@@ -228,7 +202,7 @@ io.on("connection", (socket) => {
 });
 
 // Vite middleware for development
-if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
+if (process.env.NODE_ENV !== "production") {
   const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     server: { middlewareMode: true },
@@ -236,7 +210,7 @@ if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
   });
   app.use(vite.middlewares);
 } else {
-  // Em produção (Vercel ou outro), servimos os arquivos estáticos da dist
+  // Em produção, servimos os arquivos estáticos da dist
   const distPath = path.join(process.cwd(), "dist");
   app.use(express.static(distPath));
   app.get("*", (req, res) => {
@@ -244,11 +218,9 @@ if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
   });
 }
 
-if (process.env.NODE_ENV !== "production" || (process.env.VERCEL !== "1" && !process.env.NOW_REGION)) {
-  const PORT = process.env.PORT || 3000;
-  httpServer.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
+const PORT = Number(process.env.PORT) || 3000;
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
+});
 
 export default app;
