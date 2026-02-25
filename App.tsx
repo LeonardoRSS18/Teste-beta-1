@@ -40,15 +40,31 @@ const App: React.FC = () => {
   const [activeVillageId, setActiveVillageId] = useState<string | null>(null);
   const [view, setView] = useState<'VILLAGE' | 'INVENTORY' | 'MARKET' | 'BANK' | 'ADMIN' | 'INTRO' | 'WORLD_MAP'>('VILLAGE');
   const [isLogged, setIsLogged] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'CONNECTING' | 'CONNECTED' | 'ERROR'>('CONNECTING');
 
   // Socket Connection
   useEffect(() => {
-    const socket = io();
+    const socket = io({
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+      timeout: 10000,
+    });
     socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('Socket connected:', socket.id);
+      setConnectionStatus('CONNECTED');
+    });
+
+    socket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      setConnectionStatus('ERROR');
+    });
 
     socket.on('state_update', (newState: GameState) => {
       isRemoteUpdate.current = true;
       setGameState(newState);
+      setConnectionStatus('CONNECTED');
 
       // If the current village no longer exists (reset), log out
       if (activeVillageId && activeVillageId !== 'professor' && newState.villages) {
@@ -138,13 +154,43 @@ const App: React.FC = () => {
     }
   }, [activeVillage?.inventory.cake]);
 
-  if (!gameState) {
+  if (!gameState || connectionStatus === 'CONNECTING' || connectionStatus === 'ERROR') {
     return (
-      <div className="h-screen w-screen bg-slate-900 flex flex-col items-center justify-center gap-6">
-        <Globe className="w-16 h-16 text-amber-500 animate-spin" />
-        <div className="text-center">
-          <h2 className="text-2xl font-medieval text-white mb-2">Conectando ao Reino...</h2>
-          <p className="text-slate-500 text-xs uppercase tracking-[0.3em]">Sincronizando com os outros líderes</p>
+      <div className="h-screen w-screen bg-slate-900 flex flex-col items-center justify-center gap-6 p-6">
+        <div className="relative">
+          <Globe className={`w-20 h-20 text-amber-500 ${connectionStatus === 'CONNECTING' ? 'animate-spin' : ''}`} />
+          {connectionStatus === 'ERROR' && (
+            <div className="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full">
+              <LogOut className="w-4 h-4" />
+            </div>
+          )}
+        </div>
+        
+        <div className="text-center max-w-xs">
+          <h2 className="text-2xl font-bold text-white mb-2">
+            {connectionStatus === 'ERROR' ? 'Erro de Conexão' : 'Conectando ao Reino...'}
+          </h2>
+          <p className="text-slate-500 text-xs uppercase tracking-[0.2em] leading-relaxed">
+            {connectionStatus === 'ERROR' 
+              ? 'Não foi possível estabelecer uma conexão com o servidor em tempo real.' 
+              : 'Sincronizando com os outros líderes e preparando o mapa.'}
+          </p>
+          
+          {connectionStatus === 'ERROR' && (
+            <button 
+              onClick={() => window.location.reload()}
+              className="mt-8 px-6 py-2 bg-amber-600 text-white rounded-full font-bold text-sm hover:bg-amber-500 transition-all"
+            >
+              Tentar Novamente
+            </button>
+          )}
+
+          <div className="mt-12 pt-8 border-t border-slate-800">
+            <p className="text-slate-600 text-[10px] uppercase font-bold mb-2">Dica Técnica</p>
+            <p className="text-slate-500 text-[10px] leading-tight">
+              Este jogo requer um servidor Node.js ativo. Se você estiver tentando rodar apenas os arquivos estáticos (como no GitHub Pages), as funcionalidades em tempo real não funcionarão.
+            </p>
+          </div>
         </div>
       </div>
     );
