@@ -4,9 +4,98 @@ import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { BUILDING_TYPES, INITIAL_INVENTORY, DEFAULT_SYSTEM_MARKET_CONFIG } from './gameData.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const processNextTurn = (state: any): any => {
+  const nextTurnNum = state.currentTurn + 1;
+  
+  // Replenish System Market Stock
+  const newSystemStock = { ...state.systemMarketStock };
+  if (state.config.systemMarket?.generationRates) {
+    Object.entries(state.config.systemMarket.generationRates).forEach(([res, rate]) => {
+      const resource = res as any;
+      const max = state.config.systemMarket.maxStock[resource] || 0;
+      newSystemStock[resource] = Math.min(max, newSystemStock[resource] + (rate as number));
+    });
+  }
+
+  const updatedVillages = state.villages.map((village: any) => {
+    const newInventory = { ...village.inventory };
+    const updatedBuildings = village.buildings.map((inst: any) => {
+      const type = BUILDING_TYPES.find(t => t.id === inst.typeId);
+      if (!type) return inst;
+
+      // Determine current production/consumption and cycle
+      let production = type.production;
+      let consumption = type.consumption;
+      let cycle = type.productionCycle;
+
+      if (type.modes && inst.modeId) {
+        const mode = type.modes.find(m => m.id === inst.modeId);
+        if (mode) {
+          production = mode.production;
+          consumption = mode.consumption;
+          cycle = mode.productionCycle;
+        }
+      }
+
+      const newTurnsActive = (inst.turnsActive || 0) + 1;
+      
+      if (newTurnsActive >= cycle) {
+        // Check if can produce
+        let canProduce = true;
+        Object.entries(consumption).forEach(([res, amount]) => {
+          if (newInventory[res as any] < (amount as number)) canProduce = false;
+        });
+
+        if (canProduce) {
+          // Consume
+          Object.entries(consumption).forEach(([res, amount]) => {
+            newInventory[res as any] -= (amount as number);
+          });
+          // Produce
+          Object.entries(production).forEach(([res, amount]) => {
+            const bonusPercent = village.terrainBonuses[res as any] || 0;
+            const actualProd = Math.floor((amount as number) * (1 + bonusPercent / 100));
+            newInventory[res as any] += actualProd;
+          });
+          // Reset cycle
+          return { ...inst, turnsActive: 0 };
+        }
+      }
+
+      return { ...inst, turnsActive: newTurnsActive };
+    });
+
+    const updatedLoans = village.loans.map((loan: any) => {
+      let updatedRemaining = loan.remainingAmount;
+      if (loan.type === 'COMPOUND') {
+        updatedRemaining *= (1 + loan.interestRate);
+      } else {
+        updatedRemaining += (loan.amount * loan.interestRate);
+      }
+      return { ...loan, remainingAmount: updatedRemaining };
+    });
+
+    return {
+      ...village,
+      inventory: newInventory,
+      buildings: updatedBuildings,
+      loans: updatedLoans,
+      lastTurnProcessed: nextTurnNum
+    };
+  });
+
+  return {
+    ...state,
+    currentTurn: nextTurnNum,
+    villages: updatedVillages,
+    systemMarketStock: newSystemStock
+  };
+};
 
 async function startServer() {
   const app = express();
@@ -67,7 +156,7 @@ async function startServer() {
 
     if (gameState.isLobby) {
       const playerCount = gameState.villages.length;
-      if (playerCount >= 10) {
+      if (playerCount >= 5) {
         if (gameState.lobbyCountdown === null) {
           gameState.lobbyCountdown = 20;
         } else if (gameState.lobbyCountdown > 0) {
@@ -88,7 +177,9 @@ async function startServer() {
     } else if (!gameState.isPaused) {
       gameState.turnTimeLeft -= 1;
       if (gameState.turnTimeLeft <= 0) {
+        gameState = processNextTurn(gameState);
         gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
+        io.emit("state_update", gameState);
         io.emit("turn_ended");
       }
       io.emit("tick", gameState.turnTimeLeft);
@@ -100,10 +191,52 @@ async function startServer() {
 
     socket.emit("state_update", gameState);
 
-    socket.on("update_state", (newState) => {
-      gameState = newState;
+    socket.on("update_state", (clientState) => {
+      if (!gameState) return;
+      
+      // Merge client state with authoritative server state
+      // Server owns: currentTurn, turnTimeLeft, isLobby, lobbyCountdown, systemMarketStock
+      gameState = {
+        ...clientState,
+        currentTurn: gameState.currentTurn,
+        turnTimeLeft: gameState.turnTimeLeft,
+        isLobby: gameState.isLobby,
+        lobbyCountdown: gameState.lobbyCountdown,
+        // Allow client to update systemMarketStock (purchases) and config (admin)
+      };
+      
       // Broadcast to all OTHER clients
       socket.broadcast.emit("state_update", gameState);
+    });
+
+    socket.on("force_turn", () => {
+      if (gameState.isLobby) {
+        gameState.isLobby = false;
+        gameState.lobbyCountdown = null;
+        gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
+        io.emit("game_started");
+        io.emit("state_update", gameState);
+      } else {
+        gameState = processNextTurn(gameState);
+        gameState.turnTimeLeft = gameState.config.turnDurationSeconds;
+        io.emit("state_update", gameState);
+        io.emit("turn_ended");
+      }
+    });
+
+    socket.on("reset_game", () => {
+      gameState = {
+        ...gameState,
+        currentTurn: 1,
+        villages: [],
+        market: [],
+        systemMarketStock: { ...INITIAL_INVENTORY },
+        isPaused: false,
+        turnTimeLeft: 120,
+        isLobby: true,
+        lobbyCountdown: null
+      };
+      io.emit("state_update", gameState);
     });
 
     socket.on("disconnect", () => {

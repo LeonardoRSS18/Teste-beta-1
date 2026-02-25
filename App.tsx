@@ -32,94 +32,6 @@ export const getTerrainAt = (x: number, y: number): TerrainType => {
   return terrains[index];
 };
 
-const processNextTurn = (state: GameState): GameState => {
-  const nextTurnNum = state.currentTurn + 1;
-  
-  // Replenish System Market Stock
-  const newSystemStock = { ...state.systemMarketStock };
-  if (state.config.systemMarket?.generationRates) {
-    Object.entries(state.config.systemMarket.generationRates).forEach(([res, rate]) => {
-      const resource = res as ResourceType;
-      const max = state.config.systemMarket.maxStock[resource] || 0;
-      newSystemStock[resource] = Math.min(max, newSystemStock[resource] + (rate as number));
-    });
-  }
-
-  const updatedVillages = state.villages.map(village => {
-    const newInventory = { ...village.inventory };
-    const updatedBuildings = village.buildings.map(inst => {
-      const type = BUILDING_TYPES.find(t => t.id === inst.typeId);
-      if (!type) return inst;
-
-      // Determine current production/consumption and cycle
-      let production = type.production;
-      let consumption = type.consumption;
-      let cycle = type.productionCycle;
-
-      if (type.modes && inst.modeId) {
-        const mode = type.modes.find(m => m.id === inst.modeId);
-        if (mode) {
-          production = mode.production;
-          consumption = mode.consumption;
-          cycle = mode.productionCycle;
-        }
-      }
-
-      const newTurnsActive = (inst.turnsActive || 0) + 1;
-      
-      if (newTurnsActive >= cycle) {
-        // Check if can produce
-        let canProduce = true;
-        Object.entries(consumption).forEach(([res, amount]) => {
-          if (newInventory[res as ResourceType] < amount) canProduce = false;
-        });
-
-        if (canProduce) {
-          // Consume
-          Object.entries(consumption).forEach(([res, amount]) => {
-            newInventory[res as ResourceType] -= amount;
-          });
-          // Produce
-          Object.entries(production).forEach(([res, amount]) => {
-            const bonusPercent = village.terrainBonuses[res as ResourceType] || 0;
-            const actualProd = Math.floor(amount * (1 + bonusPercent / 100));
-            newInventory[res as ResourceType] += actualProd;
-          });
-          // Reset cycle
-          return { ...inst, turnsActive: 0 };
-        }
-      }
-
-      return { ...inst, turnsActive: newTurnsActive };
-    });
-
-    const updatedLoans = village.loans.map(loan => {
-      let updatedRemaining = loan.remainingAmount;
-      if (loan.type === 'COMPOUND') {
-        updatedRemaining *= (1 + loan.interestRate);
-      } else {
-        updatedRemaining += (loan.amount * loan.interestRate);
-      }
-      return { ...loan, remainingAmount: updatedRemaining };
-    });
-
-    return {
-      ...village,
-      inventory: newInventory,
-      buildings: updatedBuildings,
-      loans: updatedLoans,
-      lastTurnProcessed: nextTurnNum
-    };
-  });
-
-  return {
-    ...state,
-    currentTurn: nextTurnNum,
-    villages: updatedVillages,
-    systemMarketStock: newSystemStock
-  };
-};
-
 const App: React.FC = () => {
   const socketRef = useRef<Socket | null>(null);
   const isRemoteUpdate = useRef(false);
@@ -137,32 +49,43 @@ const App: React.FC = () => {
     socket.on('state_update', (newState: GameState) => {
       isRemoteUpdate.current = true;
       setGameState(newState);
+
+      // If the current village no longer exists (reset), log out
+      if (activeVillageId && activeVillageId !== 'professor' && newState.villages) {
+        const stillExists = newState.villages.some(v => v.id === activeVillageId);
+        if (!stillExists) {
+          setIsLogged(false);
+          setActiveVillageId(null);
+          setView('VILLAGE');
+        }
+      }
+
+      // Reset the flag after the state update has been processed by React
       setTimeout(() => {
         isRemoteUpdate.current = false;
-      }, 0);
+      }, 100);
     });
 
     socket.on('tick', (timeLeft: number) => {
+      isRemoteUpdate.current = true;
       setGameState(prev => prev ? ({ ...prev, turnTimeLeft: timeLeft, isLobby: false }) : null);
+      setTimeout(() => { isRemoteUpdate.current = false; }, 100);
     });
 
     socket.on('lobby_tick', ({ count, countdown, villages }: { count: number, countdown: number | null, villages: Village[] }) => {
+      isRemoteUpdate.current = true;
       setGameState(prev => prev ? ({ ...prev, villages, isLobby: true, lobbyCountdown: countdown }) : null);
+      setTimeout(() => { isRemoteUpdate.current = false; }, 100);
     });
 
     socket.on('game_started', () => {
+      isRemoteUpdate.current = true;
       setGameState(prev => prev ? ({ ...prev, isLobby: false }) : null);
+      setTimeout(() => { isRemoteUpdate.current = false; }, 100);
     });
 
     socket.on('turn_ended', () => {
-      setGameState(prev => {
-        if (!prev) return null;
-        const nextState = processNextTurn(prev);
-        return {
-          ...nextState,
-          turnTimeLeft: prev.config.turnDurationSeconds
-        };
-      });
+      // Server now handles turn processing
     });
 
     return () => {
@@ -175,6 +98,7 @@ const App: React.FC = () => {
     if (!isRemoteUpdate.current && socketRef.current && gameState) {
       socketRef.current.emit('update_state', gameState);
     }
+    // No need to reset here, it's reset in the socket listener timeout
   }, [gameState]);
 
   useEffect(() => {
@@ -190,6 +114,20 @@ const App: React.FC = () => {
 
   const [showCakeAnimation, setShowCakeAnimation] = useState(false);
   const prevCakeCount = useRef(activeVillage?.inventory.cake || 0);
+
+  const forceNextTurn = () => {
+    socketRef.current?.emit('force_turn');
+  };
+
+  const resetGame = () => {
+    if (window.confirm('Tem certeza que deseja reiniciar o reino? Todos os dados serão perdidos.')) {
+      socketRef.current?.emit('reset_game');
+    }
+  };
+
+  const togglePause = () => {
+    setGameState(prev => prev ? ({ ...prev, isPaused: !prev.isPaused }) : null);
+  };
 
   useEffect(() => {
     if (activeVillage) {
@@ -231,7 +169,7 @@ const App: React.FC = () => {
           <p className="text-slate-400 uppercase tracking-[0.4em] text-xs font-black mb-12">Aguardando Líderes para Iniciar a Colonização</p>
 
           <div className="grid grid-cols-5 gap-4 mb-12">
-            {Array.from({ length: 10 }).map((_, i) => {
+            {Array.from({ length: 5 }).map((_, i) => {
               const village = gameState.villages[i];
               return (
                 <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
@@ -257,15 +195,32 @@ const App: React.FC = () => {
             ) : (
               <div className="space-y-4">
                 <div className="text-3xl font-bold text-white">
-                  {playerCount} / 10 Líderes
+                  {playerCount} / 5 Líderes
                 </div>
                 <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
                   <div 
                     className="bg-amber-500 h-full transition-all duration-500" 
-                    style={{ width: `${(playerCount / 10) * 100}%` }}
+                    style={{ width: `${(playerCount / 5) * 100}%` }}
                   />
                 </div>
-                <p className="text-slate-400 text-xs font-medium">A partida inicia automaticamente quando o 10º líder fundar sua vila.</p>
+                <p className="text-slate-400 text-xs font-medium">A partida inicia automaticamente quando o 5º líder fundar sua vila.</p>
+                
+                {activeVillageId === 'professor' && playerCount > 0 && (
+                  <div className="mt-6 flex gap-4">
+                    <button 
+                      onClick={() => socketRef.current?.emit('force_turn')}
+                      className="px-8 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl transition-all shadow-lg"
+                    >
+                      Iniciar Jogo Agora
+                    </button>
+                    <button 
+                      onClick={resetGame}
+                      className="px-8 py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl transition-all shadow-lg"
+                    >
+                      Limpar Lobby
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -274,18 +229,11 @@ const App: React.FC = () => {
     );
   }
 
-  const forceNextTurn = () => {
-    setGameState(prev => ({
-      ...processNextTurn(prev),
-      turnTimeLeft: prev.config.turnDurationSeconds
-    }));
-  };
-
-  const togglePause = () => {
-    setGameState(prev => ({ ...prev, isPaused: !prev.isPaused }));
-  };
-
   const handleRegister = (name: string, passwordHash: string) => {
+    if (name.toLowerCase() === 'professor') {
+      alert('Este nome de usuário é reservado.');
+      return;
+    }
     let x, y, isOccupied;
     do {
       x = Math.floor(Math.random() * 10);
@@ -320,6 +268,12 @@ const App: React.FC = () => {
   };
 
   const handleLogin = (name: string, passwordHash: string) => {
+    if (name.toLowerCase() === 'professor' && passwordHash === '8139') {
+      setIsLogged(true);
+      setActiveVillageId('professor'); // Special ID
+      setView('ADMIN');
+      return;
+    }
     const v = gameState.villages.find(v => v.name === name && v.passwordHash === passwordHash);
     if (v) {
       setActiveVillageId(v.id);
@@ -488,7 +442,32 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-slate-100 overflow-hidden text-slate-900">
-      {activeVillage && (
+      {activeVillageId === 'professor' ? (
+        <header className="h-24 px-10 flex items-center justify-between z-30 bg-slate-900 text-white">
+          <div className="flex items-center gap-4">
+            <Landmark className="text-amber-500 w-8 h-8" />
+            <h1 className="text-2xl font-black tracking-tight">Painel do Professor</h1>
+          </div>
+          <div className="flex items-center gap-6">
+            <button 
+              onClick={resetGame}
+              className="px-4 py-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+            >
+              Reiniciar Reino
+            </button>
+            <div className="flex flex-col items-end leading-none">
+              <span className="text-[10px] uppercase tracking-widest mb-1 opacity-70">Turno Atual</span>
+              <span className="text-2xl font-black tracking-tighter">{gameState.currentTurn}</span>
+            </div>
+            <button 
+              onClick={() => { setIsLogged(false); setActiveVillageId(null); }}
+              className="p-4 text-slate-400 hover:text-red-500 transition-all"
+            >
+              <LogOut className="w-7 h-7" />
+            </button>
+          </div>
+        </header>
+      ) : activeVillage && (
         <Header 
           village={activeVillage} 
           turn={gameState.currentTurn} 
@@ -500,11 +479,18 @@ const App: React.FC = () => {
 
       <main className="flex-1 relative overflow-hidden flex flex-col md:flex-row p-4 gap-6">
         <nav className="w-full md:w-28 bg-white border border-slate-200 rounded-[3rem] flex md:flex-col items-center justify-around md:justify-center md:py-10 gap-6 z-20 shadow-xl shadow-slate-300/40">
-          <NavButton active={view === 'VILLAGE'} onClick={() => setView('VILLAGE')} icon={<MapIcon />} label="Vila" />
-          <NavButton active={view === 'WORLD_MAP'} onClick={() => setView('WORLD_MAP')} icon={<Globe />} label="Mapa" />
-          <NavButton active={view === 'INVENTORY'} onClick={() => setView('INVENTORY')} icon={<Package />} label="Estoque" />
-          <NavButton active={view === 'MARKET'} onClick={() => setView('MARKET')} icon={<ShoppingCart />} label="Mercado" />
-          <NavButton active={view === 'BANK'} onClick={() => setView('BANK')} icon={<Landmark />} label="Banco" />
+          {activeVillageId !== 'professor' && (
+            <>
+              <NavButton active={view === 'VILLAGE'} onClick={() => setView('VILLAGE')} icon={<MapIcon />} label="Vila" />
+              <NavButton active={view === 'WORLD_MAP'} onClick={() => setView('WORLD_MAP')} icon={<Globe />} label="Mapa" />
+              <NavButton active={view === 'INVENTORY'} onClick={() => setView('INVENTORY')} icon={<Package />} label="Estoque" />
+              <NavButton active={view === 'MARKET'} onClick={() => setView('MARKET')} icon={<ShoppingCart />} label="Mercado" />
+              <NavButton active={view === 'BANK'} onClick={() => setView('BANK')} icon={<Landmark />} label="Banco" />
+            </>
+          )}
+          {activeVillageId === 'professor' && (
+            <NavButton active={view === 'WORLD_MAP'} onClick={() => setView('WORLD_MAP')} icon={<Globe />} label="Mapa" />
+          )}
           <NavButton active={view === 'ADMIN'} onClick={() => setView('ADMIN')} icon={<Settings2 />} label="Admin" />
         </nav>
 
@@ -548,8 +534,8 @@ const App: React.FC = () => {
           {view === 'ADMIN' && (
             <AdminPanel 
               gameState={gameState} 
-              onUpdateConfig={(config) => setGameState(prev => ({ ...prev, config }))}
-              onReset={() => { localStorage.clear(); window.location.reload(); }}
+              onUpdateConfig={(config) => setGameState(prev => prev ? ({ ...prev, config }) : null)}
+              onReset={resetGame}
               onTogglePause={togglePause}
               onForceNextTurn={forceNextTurn}
             />
@@ -558,6 +544,9 @@ const App: React.FC = () => {
       </main>
 
       <div className="bg-slate-900 h-14 px-8 flex items-center gap-6 text-[12px] font-bold overflow-x-auto whitespace-nowrap scrollbar-hide">
+        {activeVillageId === 'professor' && (
+          <div className="text-white uppercase tracking-widest opacity-50">Modo Observador Ativo</div>
+        )}
         {activeVillage && Object.entries(activeVillage.inventory).map(([res, amount]) => (
           <div key={res} className="flex items-center gap-2 px-4 py-1.5 bg-slate-800 rounded-full border border-slate-700 shadow-inner">
             <span className="capitalize text-slate-400">{RESOURCE_LABELS[res as ResourceType]}:</span>
