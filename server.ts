@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { BUILDING_TYPES, INITIAL_INVENTORY, DEFAULT_SYSTEM_MARKET_CONFIG } from './gameData.js';
@@ -229,28 +228,27 @@ io.on("connection", (socket) => {
 });
 
 // Vite middleware for development
-if (process.env.NODE_ENV !== "production") {
+if (process.env.NODE_ENV !== "production" && process.env.VERCEL !== "1") {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     server: { middlewareMode: true },
     appType: "spa",
   });
   app.use(vite.middlewares);
 } else {
-  app.use(express.static(path.join(__dirname, "dist")));
+  // Em produção (Vercel ou outro), servimos os arquivos estáticos da dist
+  const distPath = path.join(process.cwd(), "dist");
+  app.use(express.static(distPath));
   app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "dist", "index.html"));
+    res.sendFile(path.join(distPath, "index.html"));
   });
 }
 
-if (process.env.NODE_ENV !== "production" || process.env.VERCEL !== "1") {
+if (process.env.NODE_ENV !== "production" || (process.env.VERCEL !== "1" && !process.env.NOW_REGION)) {
   const PORT = process.env.PORT || 3000;
   httpServer.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
 }
 
-export default (req: any, res: any) => {
-  // This is for Vercel's serverless environment
-  // Note: Socket.io will have limited functionality here
-  return (app as any)(req, res);
-};
+export default app;
