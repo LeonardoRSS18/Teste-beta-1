@@ -105,6 +105,8 @@ const io = new Server(httpServer, {
     credentials: true
   },
   allowEIO3: true,
+  pingTimeout: 60000,
+  pingInterval: 25000,
   transports: ['websocket', 'polling']
 });
 
@@ -201,6 +203,10 @@ io.on("connection", (socket) => {
   });
 });
 
+// API routes
+app.get("/healthz", (req, res) => res.status(200).send("OK"));
+app.get("/api/status", (req, res) => res.json({ status: "ok", turn: gameState.currentTurn }));
+
 // Vite middleware for development
 if (process.env.NODE_ENV !== "production") {
   const { createServer: createViteServer } = await import("vite");
@@ -213,7 +219,7 @@ if (process.env.NODE_ENV !== "production") {
   // Em produção, servimos os arquivos estáticos da dist
   const distPath = path.join(process.cwd(), "dist");
   app.use(express.static(distPath));
-  app.get("*", (req, res) => {
+  app.use((req, res) => {
     res.sendFile(path.join(distPath, "index.html"));
   });
 }

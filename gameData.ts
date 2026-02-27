@@ -1,5 +1,5 @@
 
-import { BuildingType, TerrainType, ResourceType, ResourceAmount } from './types.ts';
+import type { BuildingType, TerrainType, ResourceType, ResourceAmount } from './types.ts';
 
 export const BUILDING_TYPES: BuildingType[] = [
   {

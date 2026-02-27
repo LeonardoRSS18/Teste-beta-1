@@ -37,9 +37,9 @@ const App: React.FC = () => {
   const isRemoteUpdate = useRef(false);
 
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [activeVillageId, setActiveVillageId] = useState<string | null>(null);
+  const [activeVillageId, setActiveVillageId] = useState<string | null>(() => localStorage.getItem('ecoVilaActiveId'));
   const [view, setView] = useState<'VILLAGE' | 'INVENTORY' | 'MARKET' | 'BANK' | 'ADMIN' | 'INTRO' | 'WORLD_MAP'>('VILLAGE');
-  const [isLogged, setIsLogged] = useState(false);
+  const [isLogged, setIsLogged] = useState(() => !!localStorage.getItem('ecoVilaActiveId'));
   const [connectionStatus, setConnectionStatus] = useState<'CONNECTING' | 'CONNECTED' | 'ERROR'>('CONNECTING');
 
   // Socket Connection
@@ -148,6 +148,13 @@ const App: React.FC = () => {
     setGameState(prev => prev ? ({ ...prev, isPaused: !prev.isPaused }) : null);
   };
 
+  const handleLogout = () => {
+    setIsLogged(false);
+    setActiveVillageId(null);
+    localStorage.removeItem('ecoVilaActiveId');
+    setView('VILLAGE');
+  };
+
   useEffect(() => {
     if (activeVillage) {
       if (activeVillage.inventory.cake > prevCakeCount.current) {
@@ -200,82 +207,7 @@ const App: React.FC = () => {
   }
 
   if (gameState.isLobby && isLogged) {
-    const playerCount = gameState.villages.length;
-    return (
-      <div className="h-screen w-screen bg-slate-900 flex flex-col items-center justify-center p-6 relative overflow-hidden">
-        {/* Background effects */}
-        <div className="absolute top-0 left-0 w-full h-full opacity-20 pointer-events-none">
-          <div className="absolute -top-20 -left-20 w-[40rem] h-[40rem] bg-amber-500/20 rounded-full blur-[120px]" />
-          <div className="absolute -bottom-20 -right-20 w-[40rem] h-[40rem] bg-emerald-500/20 rounded-full blur-[120px]" />
-        </div>
-
-        <div className="max-w-2xl w-full z-10 text-center">
-          <div className="inline-flex items-center justify-center p-6 bg-slate-800 rounded-[3rem] shadow-2xl mb-8 border border-slate-700">
-             <Globe className="w-16 h-16 text-amber-500 animate-pulse" />
-          </div>
-          
-          <h1 className="text-5xl font-bold text-white mb-4 tracking-tight">Teste Beta 91</h1>
-          <p className="text-slate-400 uppercase tracking-[0.4em] text-xs font-black mb-12">Aguardando Líderes para Iniciar a Colonização</p>
-
-          <div className="grid grid-cols-5 gap-4 mb-12">
-            {Array.from({ length: 5 }).map((_, i) => {
-              const village = gameState.villages[i];
-              return (
-                <div key={i} className={`aspect-square rounded-2xl border-2 flex flex-col items-center justify-center gap-2 transition-all ${
-                  village ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-400' : 'bg-slate-800/50 border-slate-700 text-slate-600'
-                }`}>
-                  <User className={`w-6 h-6 ${village ? 'animate-bounce' : ''}`} />
-                  <span className="text-[8px] font-black uppercase truncate w-full px-1">
-                    {village ? village.name : 'Vazio'}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="bg-slate-800/50 border border-slate-700 p-8 rounded-[2.5rem] backdrop-blur-xl">
-            {gameState.lobbyCountdown !== null ? (
-              <div className="space-y-4">
-                <div className="text-6xl font-black text-amber-500 animate-pulse">
-                  {gameState.lobbyCountdown}s
-                </div>
-                <p className="text-slate-300 font-bold uppercase tracking-widest text-sm">O Reino será aberto em breve!</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="text-3xl font-bold text-white">
-                  {playerCount} / 5 Líderes
-                </div>
-                <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                  <div 
-                    className="bg-amber-500 h-full transition-all duration-500" 
-                    style={{ width: `${(playerCount / 5) * 100}%` }}
-                  />
-                </div>
-                <p className="text-slate-400 text-xs font-medium">A partida inicia automaticamente quando o 5º líder fundar sua vila.</p>
-                
-                {activeVillageId === 'professor' && playerCount > 0 && (
-                  <div className="mt-6 flex gap-4">
-                    <button 
-                      onClick={() => socketRef.current?.emit('force_turn')}
-                      className="px-8 py-3 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl transition-all shadow-lg"
-                    >
-                      Iniciar Jogo Agora
-                    </button>
-                    <button 
-                      onClick={resetGame}
-                      className="px-8 py-3 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl transition-all shadow-lg"
-                    >
-                      Limpar Lobby
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
+    return null; // The server will set isLobby to false, so this should not happen
   }
 
   const handleRegister = (name: string, passwordHash: string) => {
@@ -312,6 +244,7 @@ const App: React.FC = () => {
       villages: [...prev.villages, newVillage]
     }));
     setActiveVillageId(newVillage.id);
+    localStorage.setItem('ecoVilaActiveId', newVillage.id);
     setView('INTRO');
     setIsLogged(true);
   };
@@ -319,13 +252,15 @@ const App: React.FC = () => {
   const handleLogin = (name: string, passwordHash: string) => {
     if (name.toLowerCase() === 'professor' && passwordHash === '8139') {
       setIsLogged(true);
-      setActiveVillageId('professor'); // Special ID
+      setActiveVillageId('professor');
+      localStorage.setItem('ecoVilaActiveId', 'professor');
       setView('ADMIN');
       return;
     }
     const v = gameState.villages.find(v => v.name === name && v.passwordHash === passwordHash);
     if (v) {
       setActiveVillageId(v.id);
+      localStorage.setItem('ecoVilaActiveId', v.id);
       setIsLogged(true);
       setView('VILLAGE');
     } else {
@@ -509,7 +444,7 @@ const App: React.FC = () => {
               <span className="text-2xl font-black tracking-tighter">{gameState.currentTurn}</span>
             </div>
             <button 
-              onClick={() => { setIsLogged(false); setActiveVillageId(null); }}
+              onClick={handleLogout}
               className="p-4 text-slate-400 hover:text-red-500 transition-all"
             >
               <LogOut className="w-7 h-7" />
@@ -522,7 +457,7 @@ const App: React.FC = () => {
           turn={gameState.currentTurn} 
           timeLeft={gameState.turnTimeLeft}
           isPaused={gameState.isPaused}
-          onLogout={() => { setIsLogged(false); setActiveVillageId(null); }}
+          onLogout={handleLogout}
         />
       )}
 
